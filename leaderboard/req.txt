@@ -1,0 +1,6 @@
+fastapi==0.136.3
+uvicorn==0.48.0
+redis==8.0.0
+minio==7.2.20
+python-multipart==0.0.29
+docker==7.1.0
