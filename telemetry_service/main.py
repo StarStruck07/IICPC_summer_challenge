@@ -11,7 +11,7 @@ logger = logging.getLogger("TelemetryDay3")
 app = FastAPI(title="IICPC Telemetry Engine - Day 3")
 
 # custom port 5433!
-DB_DSN = "postgres://hackathon_admin:super_secure_password_123@localhost:5433/iicpc_telemetry"
+DB_DSN = "postgres://hackathon_admin:super_secure_password_123@localhost:5432/iicpc_telemetry"
 REDIS_URL = "redis://localhost:6379"
 
 db_pool = None

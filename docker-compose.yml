@@ -1,4 +1,5 @@
 services:
+  # SHARED INFRA
   redis:
     image: redis:7-alpine
     container_name: iicpc_redis
@@ -22,6 +23,20 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
 
+  postgres:
+    image: postgres:15-alpine
+    container_name: iicpc_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: hackathon_admin
+      POSTGRES_PASSWORD: super_secure_password_123
+      POSTGRES_DB: iicpc_telemetry
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # SANDBOX ENGINE
   sandbox-api:
     build:
       context: ./sandbox-engine
@@ -54,23 +69,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: iicpc_postgres
-    restart: always
-    environment:
-      POSTGRES_USER: hackathon_admin
-      POSTGRES_PASSWORD: super_secure_password_123
-      POSTGRES_DB: iicpc_telemetry
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  # ── Load generation (bot-fleet component) ──────────────────────────────────
-  # Single-instance dev target. Stands in for a contestant submission so the
-  # fleet/telemetry/leaderboard can be exercised before the sandbox is wired up.
-  # Keeps a name + host port because it is NOT scaled.
+  # BOT FLEET
   mock-engine:
     build:
       context: ./bot-fleet
@@ -81,25 +80,58 @@ services:
       - "9100:9100"
     restart: unless-stopped
 
-  # Scalable load generator. NO container_name and NO host port mapping —
-  # both are required so `docker compose up --scale bot-fleet=N` works.
   bot-fleet:
     build:
       context: ./bot-fleet
       dockerfile: Dockerfile
     environment:
-      - REDIS_URL=redis://redis:6379/0      # reaches the redis service above
-      - TARGET=http://mock-engine:9100      # swap for a real submission later
-      - TEAM_ID=1                           # all replicas hit the same target
-      - N_BOTS=500                          # bots PER replica
-      - DURATION=30                         # seconds; set 0 to run until stopped
+      - REDIS_URL=redis://redis:6379/0
+      - TARGET=http://mock-engine:9100
+      - TEAM_ID=1
+      - N_BOTS=500
+      - DURATION=30
       - RAMP_UP=5
       - THINK_MS=0
     depends_on:
       - redis
       - mock-engine
-    # No `restart` policy on purpose — replicas attack for DURATION then exit,
-    # and we don't want them re-attacking in a loop.
+
+  # LEADERBOARD & TELEMETRY 
+  leaderboard-api:
+    image: python:3.10-slim
+    container_name: iicpc_leaderboard_api
+    restart: always
+    volumes:
+      - ./leaderboard:/app
+    working_dir: /app
+    ports:
+      - "8080:8000"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DB_DSN=postgres://hackathon_admin:super_secure_password_123@postgres:5432/iicpc_telemetry
+      - REDIS_URL=redis://redis:6379/0
+    command: >
+      bash -c "pip install -r req.txt && 
+               uvicorn api:app --host 0.0.0.0 --port 8000 --reload"
+
+  leaderboard-frontend:
+    image: node:18-alpine
+    container_name: iicpc_react
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    depends_on:
+      - leaderboard-api
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WDS_SOCKET_PORT=0
+    command: >
+      sh -c "npm install && npm start"
 
 volumes:
   minio_data:
