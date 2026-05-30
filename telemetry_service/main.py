@@ -1,32 +1,35 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import asyncpg
 import redis
 import logging
 
-# Set up logging so you can see connection statuses in your terminal
+# Set up logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("TelemetryDay2")
+logger = logging.getLogger("TelemetryDay3")
 
-app = FastAPI(title="IICPC Telemetry Engine - Day 2 Core")
+app = FastAPI(title="IICPC Telemetry Engine - Day 3")
 
-# These credentials match your docker-compose file perfectly
+# custom port 5433!
 DB_DSN = "postgres://hackathon_admin:super_secure_password_123@localhost:5433/iicpc_telemetry"
 REDIS_URL = "redis://localhost:6379"
 
-# Global placeholders for your database connections
 db_pool = None
 redis_client = None
+
+# Data Validation Schema
+class TelemetryPayload(BaseModel):
+    team_id: str
+    latency_ms: float
+    is_correct: bool
 
 @app.on_event("startup")
 async def startup_event():
     global db_pool, redis_client
     
-    # 1. Initialize PostgreSQL Connection Pool
+    # PostgreSQL Connection Pool
     try:
-        db_pool = await asyncpg.create_pool(DB_DSN, min_size=2, max_size=10)
-        logger.info("✅ PostgreSQL Connection Pool established successfully.")
-        
-        # Automatically create the telemetry table for storing bot data
+        db_pool = await asyncpg.create_pool(DB_DSN, min_size=2, max_size=20)
         async with db_pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS telemetry (
@@ -37,28 +40,52 @@ async def startup_event():
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            logger.info("✅ Telemetry database tables verified/created.")
+        logger.info("Database pools connected and tables verified.")
     except Exception as e:
-        logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
+        logger.error(f"Failed to connect to PostgreSQL: {e}")
 
-    # 2. Initialize Redis Connection
+    # Redis Connection
     try:
         redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
-        logger.info("✅ Redis connection established successfully.")
+        logger.info("Redis connection established successfully.")
     except Exception as e:
-        logger.error(f"❌ Failed to connect to Redis: {e}")
+        logger.error(f"Failed to connect to Redis: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    # Clean up connections when shutting down the app
     if db_pool:
         await db_pool.close()
     logger.info("Database pools closed.")
 
+# Ingestion Endpoint
+@app.post("/api/telemetry", status_code=202)
+async def ingest_telemetry(payload: TelemetryPayload):
+    """
+    Catches bot data and queues it into PostgreSQL.
+    asyncpg ensures the event loop never blocks.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=500, detail="Database connection lost")
+        
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO telemetry (team_id, latency_ms, is_correct)
+                VALUES ($1, $2, $3)
+                """,
+                payload.team_id, payload.latency_ms, payload.is_correct
+            )
+        return {"status": "queued"}
+    except Exception as e:
+        logger.error(f"Insert failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save metric")
+
+# Day 2 Health Check
 @app.get("/health")
 async def health_check():
-    """Simple endpoint to verify infrastructure health at a glance"""
+    """Simple endpoint to verify infrastructure health."""
     postgres_healthy = False
     redis_healthy = False
     
