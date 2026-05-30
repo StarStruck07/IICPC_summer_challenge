@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   redis:
     image: redis:7-alpine
@@ -68,6 +66,40 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  # ── Load generation (bot-fleet component) ──────────────────────────────────
+  # Single-instance dev target. Stands in for a contestant submission so the
+  # fleet/telemetry/leaderboard can be exercised before the sandbox is wired up.
+  # Keeps a name + host port because it is NOT scaled.
+  mock-engine:
+    build:
+      context: ./bot-fleet
+      dockerfile: Dockerfile
+    container_name: iicpc_mock_engine
+    command: uvicorn mock_engine:app --host 0.0.0.0 --port 9100 --workers 4
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+
+  # Scalable load generator. NO container_name and NO host port mapping —
+  # both are required so `docker compose up --scale bot-fleet=N` works.
+  bot-fleet:
+    build:
+      context: ./bot-fleet
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0      # reaches the redis service above
+      - TARGET=http://mock-engine:9100      # swap for a real submission later
+      - TEAM_ID=1                           # all replicas hit the same target
+      - N_BOTS=500                          # bots PER replica
+      - DURATION=30                         # seconds; set 0 to run until stopped
+      - RAMP_UP=5
+      - THINK_MS=0
+    depends_on:
+      - redis
+      - mock-engine
+    # No `restart` policy on purpose — replicas attack for DURATION then exit,
+    # and we don't want them re-attacking in a loop.
 
 volumes:
   minio_data:
